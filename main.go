@@ -1,9 +1,20 @@
 package main
 
 import (
-	"encoding/json"	
+	"bytes"
+	"encoding/json"
+	"fmt"
+	"io"
 	"net/http"
+	"os"
+	"time"
+
+	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/aws/credentials"
+	"github.com/aws/aws-sdk-go/aws/session"
+	"github.com/aws/aws-sdk-go/service/s3"
 )
+
 
 type Airport struct {
 	Name    string `json:"name"`
@@ -53,18 +64,78 @@ func AirportsV2(w http.ResponseWriter, r *http.Request) {
 // ## TODO: Edit this function ##
 // ##############################
 
-// UpdateAirportImage handler for updating airport images
 func UpdateAirportImage(w http.ResponseWriter, r *http.Request) {
-	// Parse the request body to get the airport name and image data
+	var req struct {
+		Name      string `json:"name"`
+		ImageData []byte `json:"image_data"`
+	}
+	err := json.NewDecoder(r.Body).Decode(&req)
+	if err != nil {
+		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
 
 	// Find the airport by name
+	var airport *Airport
+	for i := range airports {
+		if airports[i].Name == req.Name {
+			airport = &airports[i]
+			break
+		}
+	}
+	if airport == nil {
+		http.Error(w, "Airport not found", http.StatusNotFound)
+		return
+	}
 
-	// Initialize GCS client
+	// Initialize AWS session with IAM user credentials
+	sess, err := session.NewSession(&aws.Config{
+		Region: aws.String("us-west-2"),
+		Credentials: credentials.NewStaticCredentials(
+			os.Getenv("AWS_ACCESS_KEY_ID"),
+			os.Getenv("AWS_SECRET_ACCESS_KEY"),
+			"",
+		),
+	})
+	if err != nil {
+		http.Error(w, "Failed to create AWS session", http.StatusInternalServerError)
+		return
+	}
 
-	// Upload image to GCS and update the airport's image URL
+	// Generate presigned URL
+	svc := s3.New(sess)
+	req, _ := svc.PutObjectRequest(&s3.PutObjectInput{
+		Bucket: aws.String("my-unique-bucket-name"),
+		Key:    aws.String(fmt.Sprintf("%s.jpg", req.Name)),
+	})
+	urlStr, err := req.Presign(15 * time.Minute)
+	if err != nil {
+		http.Error(w, "Failed to generate presigned URL", http.StatusInternalServerError)
+		return
+	}
 
-	// Respond with success/failure
+	// Upload image using presigned URL
+	req, err = http.NewRequest("PUT", urlStr, bytes.NewReader(req.ImageData))
+	if err != nil {
+		http.Error(w, "Failed to create upload request", http.StatusInternalServerError)
+		return
+	}
+	req.Header.Set("Content-Type", "image/jpeg")
+	client := &http.Client{}
+	resp, err := client.Do(req)
+	if err != nil || resp.StatusCode != http.StatusOK {
+		http.Error(w, "Failed to upload image", http.StatusInternalServerError)
+		return
+	}
+
+	// Update the airport's image URL
+	airport.ImageURL = fmt.Sprintf("https://my-unique-bucket-name.s3.amazonaws.com/%s.jpg", req.Name)
+
+	// Respond with success
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(airport)
 }
+
 
 func main() {
 	// Setup routes
