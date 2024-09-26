@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"os"
 	"time"
@@ -75,7 +74,6 @@ func UpdateAirportImage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Find the airport by name
 	var airport *Airport
 	for i := range airports {
 		if airports[i].Name == req.Name {
@@ -88,7 +86,6 @@ func UpdateAirportImage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Initialize AWS session with IAM user credentials
 	sess, err := session.NewSession(&aws.Config{
 		Region: aws.String("us-west-2"),
 		Credentials: credentials.NewStaticCredentials(
@@ -102,40 +99,36 @@ func UpdateAirportImage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Generate presigned URL
 	svc := s3.New(sess)
-	req, _ := svc.PutObjectRequest(&s3.PutObjectInput{
+	reqPutObject := &s3.PutObjectInput{
 		Bucket: aws.String("my-unique-bucket-name"),
 		Key:    aws.String(fmt.Sprintf("%s.jpg", req.Name)),
-	})
-	urlStr, err := req.Presign(15 * time.Minute)
+	}
+	reqS3, _ := svc.PutObjectRequest(reqPutObject)
+	urlStr, err := reqS3.Presign(15 * time.Minute)
 	if err != nil {
 		http.Error(w, "Failed to generate presigned URL", http.StatusInternalServerError)
 		return
 	}
 
-	// Upload image using presigned URL
-	req, err = http.NewRequest("PUT", urlStr, bytes.NewReader(req.ImageData))
+	uploadReq, err := http.NewRequest("PUT", urlStr, bytes.NewReader(req.ImageData))
 	if err != nil {
 		http.Error(w, "Failed to create upload request", http.StatusInternalServerError)
 		return
 	}
-	req.Header.Set("Content-Type", "image/jpeg")
+	uploadReq.Header.Set("Content-Type", "image/jpeg")
 	client := &http.Client{}
-	resp, err := client.Do(req)
+	resp, err := client.Do(uploadReq)
 	if err != nil || resp.StatusCode != http.StatusOK {
 		http.Error(w, "Failed to upload image", http.StatusInternalServerError)
 		return
 	}
 
-	// Update the airport's image URL
 	airport.ImageURL = fmt.Sprintf("https://my-unique-bucket-name.s3.amazonaws.com/%s.jpg", req.Name)
 
-	// Respond with success
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(airport)
 }
-
 
 func main() {
 	// Setup routes
